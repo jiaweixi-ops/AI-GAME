@@ -24,6 +24,7 @@ class OrchestratorResult:
     decision: Decision | None = None
     keeper: KeeperResult | None = None
     incident_path: str | None = None
+    reason: str | None = None
 
 
 class Orchestrator:
@@ -175,10 +176,10 @@ class Orchestrator:
                 keeper=keeper_result,
             )
 
-        incident = self._create_incident(
-            keeper_result.error_code or keeper_result.reason or "blocked",
-            decision.task,
+        incident_reason = (
+            keeper_result.error_code or keeper_result.reason or "blocked"
         )
+        incident = self._create_incident(incident_reason, decision.task)
         decision.task.status = "blocked"
         self.store.save_task(decision.task)
 
@@ -194,6 +195,7 @@ class Orchestrator:
             decision=decision,
             keeper=keeper_result,
             incident_path=incident,
+            reason=incident_reason,
         )
 
     def _replan_blocked(self, task: TaskSpec) -> OrchestratorResult:
@@ -205,13 +207,18 @@ class Orchestrator:
             self.store.increment_metric("safe_stops")
             return OrchestratorResult(
                 "safe_stop",
-                "replan_budget_exhausted",
+                "replan",
                 incident_path=incident,
+                reason=exc.code,
             )
 
         decision = self._ask_ai(trigger="replan", task=task)
         if decision is None:
-            return OrchestratorResult("safe_stop", "ai_error")
+            return OrchestratorResult(
+                "safe_stop",
+                "replan",
+                reason="ai_error",
+            )
 
         self._apply_plan_patch(
             self.store.load_plan(),
@@ -225,6 +232,7 @@ class Orchestrator:
                 "safe_stop",
                 "replan",
                 decision=decision,
+                reason=decision.reason or "model_safe_stop",
             )
 
         if decision.decision == "continue":
@@ -253,16 +261,16 @@ class Orchestrator:
                     keeper=keeper_result,
                 )
 
-            incident = self._create_incident(
-                keeper_result.error_code or keeper_result.reason or "blocked",
-                task,
-            )
+            incident_reason = keeper_result.error_code or keeper_result.reason or "blocked"
+            incident = self._create_incident(incident_reason, task)
             task.status = "blocked"
             self.store.save_task(task)
 
             replanned = self._replan_blocked(task)
             if replanned.incident_path is None:
                 replanned.incident_path = incident
+            if replanned.reason is None:
+                replanned.reason = incident_reason
             return replanned
 
         if task is not None and task.status == "blocked":
@@ -270,7 +278,11 @@ class Orchestrator:
 
         decision = self._ask_ai(trigger=trigger, task=task)
         if decision is None:
-            return OrchestratorResult("safe_stop", "ai_error")
+            return OrchestratorResult(
+                "safe_stop",
+                trigger,
+                reason="ai_error",
+            )
 
         self._apply_plan_patch(
             self.store.load_plan(),
@@ -287,6 +299,7 @@ class Orchestrator:
                 "safe_stop",
                 trigger,
                 decision=decision,
+                reason=decision.reason or "model_safe_stop",
             )
 
         if decision.decision == "continue":
