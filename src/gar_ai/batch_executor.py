@@ -179,6 +179,7 @@ class BatchExecutor:
                 },
             )
         )
+        self.batch_budget.flush_global()
 
         return BatchExecutionResult(
             "partial",
@@ -280,12 +281,9 @@ class BatchExecutor:
                             tool="place_verified",
                             target=entity.name,
                             position=[entity.x, entity.y],
-                            environment=self.environment_summary(
-                                self.snapshot()
-                            ),
+                            environment=self.environment_summary(self.snapshot()),
                             reason_code=(
-                                result.error_code
-                                or ErrorCode.TOOL_FAILED.value
+                                result.error_code or ErrorCode.TOOL_FAILED.value
                             ),
                             evidence={"reason": result.reason},
                         )
@@ -329,21 +327,22 @@ class BatchExecutor:
                 )
             )
 
-            if (
-                self.batch_budget.checkpoint_due()
-                and checkpoint is not None
-                and not checkpoint(self.snapshot(), index + 1, total)
-            ):
-                return self._abort(
-                    task_id=task_id,
-                    batch_id=batch_id,
-                    phase="checkpoint",
-                    placed=placed,
-                    total=total,
-                    reason="checkpoint verification failed",
-                    error_code=ErrorCode.FRESH_STATE_UNVERIFIED.value,
-                )
+            if self.batch_budget.checkpoint_due():
+                if checkpoint is not None and not checkpoint(
+                    self.snapshot(), index + 1, total
+                ):
+                    return self._abort(
+                        task_id=task_id,
+                        batch_id=batch_id,
+                        phase="checkpoint",
+                        placed=placed,
+                        total=total,
+                        reason="checkpoint verification failed",
+                        error_code=ErrorCode.FRESH_STATE_UNVERIFIED.value,
+                    )
+                self.batch_budget.flush_global()
 
+        self.batch_budget.flush_global()
         return BatchExecutionResult(
             "constructed",
             "construction",
@@ -400,6 +399,7 @@ class BatchExecutor:
                 self.metrics._save()
                 self.metrics.record_progress(ProgressKind.PRODUCTION)
 
+            self.batch_budget.flush_global()
             return BatchExecutionResult(
                 "completed",
                 "verify",
@@ -449,14 +449,8 @@ def smelting_operational_predicate(
         actual = {
             (
                 str(entity.get("name")),
-                round(
-                    float((entity.get("position") or [0, 0])[0]),
-                    2,
-                ),
-                round(
-                    float((entity.get("position") or [0, 0])[1]),
-                    2,
-                ),
+                round(float((entity.get("position") or [0, 0])[0]), 2),
+                round(float((entity.get("position") or [0, 0])[1]), 2),
             )
             for entity in snapshot.get("entities", []) or []
         }
@@ -466,14 +460,9 @@ def smelting_operational_predicate(
 
         power_ok = (
             min_power_margin is None
-            or (
-                margin is not None
-                and float(margin) >= min_power_margin
-            )
+            or (margin is not None and float(margin) >= min_power_margin)
         )
-        production_ok = (
-            rate is not None and float(rate) >= min_product_rate
-        )
+        production_ok = rate is not None and float(rate) >= min_product_rate
         ok = built == len(targets) and power_ok and production_ok
 
         return ok, {

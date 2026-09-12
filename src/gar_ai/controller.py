@@ -19,9 +19,9 @@ class ControllerConfig:
 class ControllerLoop:
     """Long-lived driver for the event-driven agent.
 
-    ``safe_stop`` from the orchestrator is interpreted as a runtime SAFE_HOLD,
-    not as permission to terminate the controller process. The loop continues
-    heartbeats until an explicit stop event is set.
+    Runtime safety semantics live in :meth:`step`, not only in
+    :meth:`run_forever`. Any caller that drives the controller one step at a
+    time therefore gets the same SAFE_HOLD behavior as the built-in loop.
     """
 
     def __init__(
@@ -56,10 +56,17 @@ class ControllerLoop:
         logger.warning("controller entered SAFE_HOLD: %s", self._safe_hold_reason)
 
     def resume(self) -> None:
-        """Leave SAFE_HOLD and request a fresh strategic synchronization."""
+        """Leave SAFE_HOLD and force a fresh user-resume synchronization."""
         self._safe_hold = False
         self._safe_hold_reason = None
         self._resume_pending = True
+        logger.info("controller resume requested")
+
+    def _finalize_result(self, result: OrchestratorResult) -> OrchestratorResult:
+        """Apply runtime safety transitions to every externally visible step."""
+        if result.status == "safe_stop":
+            self.enter_safe_hold(result.trigger)
+        return result
 
     def step(self) -> OrchestratorResult:
         if self._safe_hold:
@@ -67,35 +74,47 @@ class ControllerLoop:
 
         if self._resume_pending:
             self._resume_pending = False
-            return self.orchestrator.tick(trigger="user_resume")
+            return self._finalize_result(
+                self.orchestrator.tick(trigger="user_resume")
+            )
 
         task = self.orchestrator.store.load_task()
 
         if not self._started:
             self._started = True
-            return self.orchestrator.tick(trigger="startup")
+            return self._finalize_result(
+                self.orchestrator.tick(trigger="startup")
+            )
 
         if task is not None:
-            return self.orchestrator.tick(trigger="heartbeat")
+            return self._finalize_result(
+                self.orchestrator.tick(trigger="heartbeat")
+            )
 
         if self._now() - self._last_review >= self.config.strategic_review_sec:
             self._last_review = self._now()
-            return self.orchestrator.tick(trigger="strategic_review")
+            return self._finalize_result(
+                self.orchestrator.tick(trigger="strategic_review")
+            )
 
         return OrchestratorResult("idle", "heartbeat")
 
+    def shutdown(self) -> None:
+        """Flush runtime state owned by the orchestrator/store before exit."""
+        flush = getattr(self.orchestrator, "flush_runtime", None)
+        if callable(flush):
+            flush()
+
     def run_forever(self, stop_event: threading.Event | None = None) -> None:
         stop_event = stop_event or threading.Event()
-
-        while not stop_event.is_set():
-            result = self.step()
-            logger.info(
-                "controller status=%s trigger=%s",
-                result.status,
-                result.trigger,
-            )
-
-            if result.status == "safe_stop":
-                self.enter_safe_hold(result.trigger)
-
-            stop_event.wait(self.config.heartbeat_sec)
+        try:
+            while not stop_event.is_set():
+                result = self.step()
+                logger.info(
+                    "controller status=%s trigger=%s",
+                    result.status,
+                    result.trigger,
+                )
+                stop_event.wait(self.config.heartbeat_sec)
+        finally:
+            self.shutdown()

@@ -1,6 +1,6 @@
 # AI-game — Factorio Autonomous Agent Lite
 
-Current code target: **V0-RC1 readiness + V0.5 Engineering Freeze implementation**.
+Current code target: **V0-RC2 runtime control + V0.5 Engineering Freeze implementation**.
 
 > The LLM chooses the future; deterministic code moves reality toward that future.
 
@@ -19,16 +19,18 @@ Passing unit tests does not count as a live Factorio release acceptance.
 
 The repository keeps the V0 guarantees: ACK + fresh-state verified writes, desired-state/idempotent tasks, bounded replan, Watchdog, incident bundles, safe AI fallback and event-driven control.
 
-## V0-RC1 runtime hardening
+## V0-RC2 runtime hardening
 
-- `gar-ai` CLI / `python -m gar_ai` is the real controller entry point;
-- the CLI requires a user-supplied, already-live-probed `module:function` Bridge factory;
-- orchestrator `safe_stop` becomes controller `SAFE_HOLD`; the 24/7 process stays alive;
-- `ControllerLoop.resume()` leaves SAFE_HOLD and forces state/strategy resynchronization;
-- Keeper in-memory action history is a bounded ring buffer;
-- full action history is persisted as JSONL;
-- Global Batch Budget is persisted and uses a rolling window so restart cannot bypass it and long-running controllers do not hit a lifetime quota;
-- V0.5 smelting verification requires a positive product-rate threshold.
+- `gar-ai` CLI / `python -m gar_ai` is the controller entry point;
+- runtime SAFE_HOLD semantics are enforced inside `ControllerLoop.step()`, so custom `while ctl.step()` drivers cannot bypass them;
+- AI/provider `safe_stop` enters SAFE_HOLD without terminating the 24/7 process;
+- `ControllerLoop.resume()` forces a `user_resume` strategic resynchronization;
+- CLI installs separate shutdown and resume signals: `SIGINT/SIGTERM` stop cleanly, while `SIGUSR1` (POSIX) or `SIGBREAK` (Windows when available) resumes SAFE_HOLD;
+- optional `--duration-sec` provides a clean supervised-run stop path;
+- Keeper in-memory action history is bounded and configurable with `--action-log-limit`, while full history stays in JSONL;
+- Global Batch Budget remains persistent but writes are batched by action/time thresholds, with forced flushes at batch checkpoints and terminal transitions;
+- graceful shutdown fsyncs runtime state files;
+- V0.5 smelting verification still requires a positive real product-rate threshold.
 
 ## V0.5 implemented infrastructure
 
@@ -58,7 +60,8 @@ export GAR_AI_API_KEY="..."
 
 gar-ai \
   --bridge-factory your_factorio_adapter:create_bridge \
-  --runtime-dir runtime/live
+  --runtime-dir runtime/live \
+  --action-log-limit 500
 ```
 
 Equivalent:
@@ -69,11 +72,18 @@ python -m gar_ai --bridge-factory your_factorio_adapter:create_bridge
 
 Every primitive exposed by that adapter must pass a versioned Live Contract Probe first.
 
+### Runtime control
+
+- `SIGINT` / `SIGTERM`: graceful shutdown.
+- `SIGUSR1` on POSIX: leave SAFE_HOLD and resume with a fresh `user_resume` sync.
+- `SIGBREAK` on Windows when available: same resume behavior.
+- embedding code can always call `ControllerLoop.resume()` directly.
+
 ## Safety behavior
 
 A failed batch does **not** automatically demolish player construction. It records a partial transaction, releases unused reservations/area locks, emits structured evidence, and expects desired-state reconciliation/replan.
 
-An AI/provider failure does not terminate the 24/7 controller. The controller enters `SAFE_HOLD`, continues heartbeat/state availability, and waits for an explicit resume or later recovery mechanism.
+An AI/provider failure does not terminate the 24/7 controller. The controller enters `SAFE_HOLD`, continues heartbeat/state availability, and waits for an explicit resume.
 
 ## Tests
 

@@ -65,7 +65,6 @@ class V0RC1RuntimeTests(unittest.TestCase):
 
         self.assertTrue(loop.safe_hold)
         self.assertEqual(loop.safe_hold_reason, "ai_error")
-        # The second heartbeat stayed inside SAFE_HOLD instead of calling AI again.
         self.assertEqual(orchestrator.calls, ["startup"])
         self.assertEqual(stop.waits, 2)
 
@@ -79,6 +78,7 @@ class V0RC1RuntimeTests(unittest.TestCase):
 
         self.assertEqual(result.status, "safe_stop")
         self.assertEqual(orchestrator.calls, ["user_resume"])
+        self.assertTrue(loop.safe_hold)
 
     def test_keeper_action_log_is_bounded_but_full_history_is_persisted(self):
         with tempfile.TemporaryDirectory() as td:
@@ -124,6 +124,7 @@ class V0RC1RuntimeTests(unittest.TestCase):
                 global_store=store,
             )
             first.consume_atomic("x")
+            first.flush_global()
 
             parent2 = BudgetContext(
                 AtomicBudgetLimits(10),
