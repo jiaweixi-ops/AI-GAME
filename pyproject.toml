@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "factorio-autonomous-agent-lite"
-version = "0.2.1"
+version = "0.2.2"
 description = "V0/V0.5 verified execution and batch-construction kernel for an event-driven Factorio AI controller"
 requires-python = ">=3.11"
 dependencies = []
