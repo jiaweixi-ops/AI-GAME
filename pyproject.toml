@@ -4,10 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "factorio-autonomous-agent-lite"
-version = "0.2.0"
+version = "0.2.1"
 description = "V0/V0.5 verified execution and batch-construction kernel for an event-driven Factorio AI controller"
 requires-python = ">=3.11"
 dependencies = []
+
+[project.scripts]
+gar-ai = "gar_ai.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
