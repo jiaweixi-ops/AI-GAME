@@ -111,3 +111,24 @@ class JsonStateStore:
                 )
             )
             fh.write("\n")
+
+    def flush(self) -> None:
+        """Best-effort fsync of durable runtime files on graceful shutdown."""
+        paths = (
+            self.task_path,
+            self.runtime_path,
+            self.plan_path,
+            self.failure_path,
+            self.metrics_path,
+            self.global_budget_path,
+            self.action_history_path,
+        )
+        for path in paths:
+            if not path.exists():
+                continue
+            try:
+                with path.open("rb") as fh:
+                    os.fsync(fh.fileno())
+            except OSError:
+                # Shutdown flush is best-effort; already-closed atomic writes stay valid.
+                continue
