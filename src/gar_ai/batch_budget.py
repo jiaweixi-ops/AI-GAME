@@ -24,6 +24,20 @@ class GlobalBudgetLimits:
 
 
 @dataclass(slots=True)
+class GlobalBudgetPersistencePolicy:
+    """Bound global-budget disk writes without making persistence optional."""
+
+    flush_every_actions: int = 25
+    flush_interval_sec: float = 5.0
+
+    def validate(self) -> None:
+        if self.flush_every_actions <= 0:
+            raise ValueError("flush_every_actions must be > 0")
+        if self.flush_interval_sec <= 0:
+            raise ValueError("flush_interval_sec must be > 0")
+
+
+@dataclass(slots=True)
 class BatchBudgetLimits:
     max_actions: int = 500
     max_entities: int = 256
@@ -86,8 +100,15 @@ class BatchBudgetContext:
 
     Every atomic call is charged to the parent task budget first and only then
     committed to batch/global counters. Global counters may be persisted through
-    ``global_store`` and reset on a bounded rolling window, preventing both
-    restart bypass and lifetime exhaustion.
+    ``global_store`` and reset on a bounded rolling window.
+
+    Persistence is deliberately batched: an active process may have a small
+    in-memory delta, while checkpoints/terminal transitions call
+    :meth:`flush_global` to force durability. This avoids rewriting a JSON file
+    for every belt/inserter placement.
+
+    One context is thread-safe. Cross-context concurrent scheduling remains a V1
+    concern and requires a shared store-level transaction/lock.
     """
 
     def __init__(
@@ -100,11 +121,14 @@ class BatchBudgetContext:
         batch_state: BatchBudgetState | None = None,
         global_state: GlobalBudgetState | None = None,
         global_store: GlobalBudgetStore | None = None,
+        persistence: GlobalBudgetPersistencePolicy | None = None,
         clock=time.time,
     ) -> None:
         self.parent = parent
         self.batch_limits = batch_limits or BatchBudgetLimits()
         self.global_limits = global_limits or GlobalBudgetLimits()
+        self.persistence = persistence or GlobalBudgetPersistencePolicy()
+        self.persistence.validate()
         self.clock = clock
         self.global_store = global_store
         self._lock = threading.Lock()
@@ -125,17 +149,37 @@ class BatchBudgetContext:
                 now=now,
             )
         else:
-            self.global_state = GlobalBudgetState(
-                window_started_at_epoch=now
-            )
+            self.global_state = GlobalBudgetState(window_started_at_epoch=now)
 
+        self._dirty_actions = 0
+        self._last_persist_at = now
         self._refresh_global_window(now)
 
-    def _persist_global(self) -> None:
-        if self.global_store is not None:
-            self.global_store.save_global_budget(
-                self.global_state.to_dict()
+    def _write_global(self, now: float | None = None) -> None:
+        if self.global_store is None:
+            self._dirty_actions = 0
+            self._last_persist_at = float(
+                self.clock() if now is None else now
             )
+            return
+
+        current = float(self.clock() if now is None else now)
+        self.global_store.save_global_budget(self.global_state.to_dict())
+        self._dirty_actions = 0
+        self._last_persist_at = current
+
+    def _persist_global_if_due(self, now: float | None = None) -> None:
+        current = float(self.clock() if now is None else now)
+        if self._dirty_actions >= self.persistence.flush_every_actions:
+            self._write_global(current)
+            return
+        if current - self._last_persist_at >= self.persistence.flush_interval_sec:
+            self._write_global(current)
+
+    def flush_global(self) -> None:
+        """Force durable Global Budget state at a checkpoint/terminal boundary."""
+        with self._lock:
+            self._write_global()
 
     def _refresh_global_window(self, now: float | None = None) -> None:
         current = float(self.clock() if now is None else now)
@@ -146,10 +190,9 @@ class BatchBudgetContext:
         if age < self.global_limits.window_sec:
             return
 
-        self.global_state = GlobalBudgetState(
-            window_started_at_epoch=current
-        )
-        self._persist_global()
+        self.global_state = GlobalBudgetState(window_started_at_epoch=current)
+        self._dirty_actions = 0
+        self._write_global(current)
 
     def _preflight(self, *, entities: int, material_cost: int) -> None:
         now = float(self.clock())
@@ -204,13 +247,8 @@ class BatchBudgetContext:
         entities: int = 0,
         material_cost: int = 0,
     ) -> None:
-        # One context is thread-safe. Cross-context concurrent scheduling remains
-        # a V1 concern and must use a shared store-level transaction/lock.
         with self._lock:
-            self._preflight(
-                entities=entities,
-                material_cost=material_cost,
-            )
+            self._preflight(entities=entities, material_cost=material_cost)
             self.parent.consume_atomic(
                 tool,
                 entities=entities,
@@ -224,7 +262,8 @@ class BatchBudgetContext:
             self.global_state.actions += 1
             self.global_state.entities += entities
             self.global_state.material_cost += material_cost
-            self._persist_global()
+            self._dirty_actions += 1
+            self._persist_global_if_due()
 
     def record_failure(self) -> None:
         self.batch.failures += 1
