@@ -1,31 +1,15 @@
-# AI decision schema — V0
+# AI decision schema — V0.1
 
-The planner returns a single JSON object. Free-form execution instructions are rejected.
+The planner returns one JSON object. Free-form execution instructions are rejected.
 
-```json
-{
-  "decision": "create_task",
-  "reason": "research is starved",
-  "plan_patch": {
-    "current": "restore research",
-    "next": "continue current technology",
-    "watch": ["research.state", "research.progress"]
-  },
-  "task": {
-    "task_id": "restore-research-001",
-    "objective": "restore research progress",
-    "reason": "science supply is empty",
-    "desired_state": {"research.state": "progressing"},
-    "operations": [
-      {"tool": "ensure_item_verified", "args": {"item": "automation-science-pack", "count": 3}},
-      {"tool": "transfer_verified", "args": {"item": "automation-science-pack", "x": 5, "y": 5, "target_count": 3}}
-    ],
-    "success_when": [{"path": "research.state", "op": "eq", "value": "progressing"}],
-    "abort_if": []
-  }
-}
-```
+`create_task` requires a non-empty bounded `operations` list and at least one structured `success_when` condition.
 
-Allowed condition operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `truthy`, `falsy`.
+`desired_state` uses dot-separated paths into the normalized live snapshot, for example `research.state` or `player.position`.
 
-The model cannot name arbitrary bridge/Lua actions. `operations[].tool` must be in the fixed verified-tool allowlist or the decision is rejected before execution.
+Allowed condition operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `truthy`, `falsy`, `changed`, `increased`, `delta_gt`.
+
+`changed` / `increased` / `delta_gt` compare the final state with the task execution baseline.
+
+Unknown `abort_if` paths fail safe and block the task.
+
+`operations[].tool` must be in the fixed Verified Tool Surface allowlist. Raw Lua/direct Bridge actions are rejected.

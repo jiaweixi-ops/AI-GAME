@@ -14,7 +14,6 @@ class WatchdogConfig:
     action_history: int = 30
     state_history: int = 12
     recurrence_threshold: int = 4
-    min_actions_for_loop: int = 6
 
 
 @dataclass(slots=True)
@@ -28,10 +27,20 @@ class Watchdog:
     def __init__(self, config: WatchdogConfig | None = None, *, now=time.monotonic) -> None:
         self.config = config or WatchdogConfig()
         self._now = now
+        self.task_id: str | None = None
         self.last_meaningful_progress = now()
         self.actions: deque[str] = deque(maxlen=self.config.action_history)
         self.states: deque[str] = deque(maxlen=self.config.state_history)
         self.actions_since_progress = 0
+
+    def begin_task(self, task_id: str) -> None:
+        if self.task_id == task_id:
+            return
+        self.task_id = task_id
+        self.actions.clear()
+        self.states.clear()
+        self.actions_since_progress = 0
+        self.last_meaningful_progress = self._now()
 
     def progress_age(self) -> float:
         return max(0.0, self._now() - self.last_meaningful_progress)
@@ -39,6 +48,7 @@ class Watchdog:
     def mark_meaningful_progress(self, reason: str) -> None:
         self.last_meaningful_progress = self._now()
         self.actions_since_progress = 0
+        self.states.clear()
 
     def record_action(self, tool: str, args: Mapping[str, Any]) -> None:
         canonical = json.dumps({"tool": tool, "args": args}, sort_keys=True, ensure_ascii=False, default=str)
@@ -55,22 +65,18 @@ class Watchdog:
 
     def _loop_event(self) -> WatchdogEvent | None:
         seq = list(self.actions)
-        if len(seq) < self.config.min_actions_for_loop:
-            return None
-        for width in (1, 2, 3):
-            need = width * 3
+        for width, reps in ((1, 3), (2, 2), (3, 2)):
+            need = width * reps
             if len(seq) < need:
                 continue
             tail = seq[-need:]
             unit = tail[:width]
-            if tail == unit * 3:
-                return WatchdogEvent("LOOP_DETECTED", f"repeating action pattern of width {width}", {"pattern": unit, "repetitions": 3})
+            if tail == unit * reps:
+                return WatchdogEvent("LOOP_DETECTED", f"repeating action pattern of width {width}", {"pattern": unit, "repetitions": reps})
         return None
 
     def _recurrence_event(self) -> WatchdogEvent | None:
-        if self.actions_since_progress < self.config.recurrence_threshold:
-            return None
-        if len(self.states) < self.config.recurrence_threshold:
+        if self.actions_since_progress < self.config.recurrence_threshold or len(self.states) < self.config.recurrence_threshold:
             return None
         tail = list(self.states)[-self.config.recurrence_threshold:]
         if len(set(tail)) == 1:
@@ -79,12 +85,12 @@ class Watchdog:
 
     def evaluate(self) -> list[WatchdogEvent]:
         events: list[WatchdogEvent] = []
-        if self.progress_age() > self.config.no_progress_sec:
-            events.append(WatchdogEvent("NO_PROGRESS", "meaningful progress timeout exceeded", {"age_sec": self.progress_age(), "limit_sec": self.config.no_progress_sec}))
         loop = self._loop_event()
         if loop:
             events.append(loop)
         recurrence = self._recurrence_event()
         if recurrence:
             events.append(recurrence)
+        if self.progress_age() > self.config.no_progress_sec:
+            events.append(WatchdogEvent("NO_PROGRESS", "meaningful progress timeout exceeded", {"age_sec": self.progress_age(), "limit_sec": self.config.no_progress_sec}))
         return events

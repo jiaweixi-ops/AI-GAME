@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Mapping
 
@@ -20,7 +20,7 @@ class Ack:
 
     @property
     def accepted(self) -> bool:
-        return self.status == "accepted"
+        return self.status.strip().lower() == "accepted"
 
 
 @dataclass(slots=True)
@@ -30,6 +30,7 @@ class ToolResult:
     changed: bool
     meaningful_progress: bool
     reason: str | None = None
+    error_code: str | None = None
     before: Mapping[str, Any] | None = None
     after: Mapping[str, Any] | None = None
     evidence: Mapping[str, Any] = field(default_factory=dict)
@@ -64,7 +65,7 @@ class ToolCall:
 class Condition:
     path: str
     op: str
-    value: Any
+    value: Any = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "Condition":
@@ -72,7 +73,8 @@ class Condition:
         op = data.get("op")
         if not isinstance(path, str) or not path:
             raise ValueError("condition.path must be a non-empty string")
-        if op not in {"eq", "ne", "gt", "gte", "lt", "lte", "contains", "truthy", "falsy"}:
+        allowed = {"eq", "ne", "gt", "gte", "lt", "lte", "contains", "truthy", "falsy", "changed", "increased", "delta_gt"}
+        if op not in allowed:
             raise ValueError(f"unsupported condition op: {op!r}")
         return cls(path=path, op=str(op), value=data.get("value"))
 
@@ -108,44 +110,16 @@ class TaskSpec:
         if not isinstance(desired_state, dict):
             raise ValueError("desired_state must be an object")
         operations_raw = data.get("operations", [])
-        if not isinstance(operations_raw, list):
-            raise ValueError("operations must be an array")
         success_raw = data.get("success_when", [])
         abort_raw = data.get("abort_if", [])
+        if not isinstance(operations_raw, list):
+            raise ValueError("operations must be an array")
         if not isinstance(success_raw, list) or not isinstance(abort_raw, list):
             raise ValueError("success_when and abort_if must be arrays")
-        return cls(
-            task_id=task_id,
-            objective=objective,
-            reason=reason,
-            desired_state=dict(desired_state),
-            operations=[ToolCall.from_dict(x) for x in operations_raw],
-            success_when=[Condition.from_dict(x) for x in success_raw],
-            abort_if=[Condition.from_dict(x) for x in abort_raw],
-            current_state=dict(data.get("current_state", {}) or {}),
-            remaining=dict(data.get("remaining", {}) or {}),
-            status=str(data.get("status", "pending")),
-            cursor=int(data.get("cursor", 0)),
-            failures=int(data.get("failures", 0)),
-            replans=int(data.get("replans", 0)),
-        )
+        return cls(task_id=task_id, objective=objective, reason=reason, desired_state=dict(desired_state), operations=[ToolCall.from_dict(x) for x in operations_raw], success_when=[Condition.from_dict(x) for x in success_raw], abort_if=[Condition.from_dict(x) for x in abort_raw], current_state=dict(data.get("current_state", {}) or {}), remaining=dict(data.get("remaining", {}) or {}), status=str(data.get("status", "pending")), cursor=int(data.get("cursor", 0)), failures=int(data.get("failures", 0)), replans=int(data.get("replans", 0)))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "task_id": self.task_id,
-            "objective": self.objective,
-            "reason": self.reason,
-            "desired_state": self.desired_state,
-            "operations": [asdict(x) for x in self.operations],
-            "success_when": [asdict(x) for x in self.success_when],
-            "abort_if": [asdict(x) for x in self.abort_if],
-            "current_state": self.current_state,
-            "remaining": self.remaining,
-            "status": self.status,
-            "cursor": self.cursor,
-            "failures": self.failures,
-            "replans": self.replans,
-        }
+        return {"task_id": self.task_id, "objective": self.objective, "reason": self.reason, "desired_state": self.desired_state, "operations": [asdict(x) for x in self.operations], "success_when": [asdict(x) for x in self.success_when], "abort_if": [asdict(x) for x in self.abort_if], "current_state": self.current_state, "remaining": self.remaining, "status": self.status, "cursor": self.cursor, "failures": self.failures, "replans": self.replans}
 
 
 @dataclass(slots=True)
@@ -162,14 +136,7 @@ class MasterPlan:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "MasterPlan":
-        return cls(
-            long_term=data.get("long_term"),
-            mid_term=data.get("mid_term"),
-            current=data.get("current"),
-            next=data.get("next"),
-            watch=list(data.get("watch", []) or []),
-            version=int(data.get("version", 1)),
-        )
+        return cls(long_term=data.get("long_term"), mid_term=data.get("mid_term"), current=data.get("current"), next=data.get("next"), watch=list(data.get("watch", []) or []), version=int(data.get("version", 1)))
 
 
 @dataclass(slots=True)

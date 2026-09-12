@@ -16,7 +16,7 @@ def _resource_view(snapshot: Mapping[str, Any], name: str) -> dict[str, Any]:
 
 
 class StateDigestBuilder:
-    SCHEMA_VERSION = "v0"
+    SCHEMA_VERSION = "v0.1"
 
     def build(self, snapshot: Mapping[str, Any], *, goal: str | None, agent_state: Mapping[str, Any] | None = None, recent_failure: Mapping[str, Any] | None = None, plan: MasterPlan | None = None) -> dict[str, Any]:
         agent_state = agent_state or {}
