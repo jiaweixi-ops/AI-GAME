@@ -1,15 +1,11 @@
-# AI decision schema — V0.1
+# AI decision schema — 1.1
 
-The planner returns one JSON object. Free-form execution instructions are rejected.
+Planner output is strict JSON. Unknown fields are rejected.
 
-`create_task` requires a non-empty bounded `operations` list and at least one structured `success_when` condition.
+Top-level fields: `decision`, `reason`, `plan_patch`, optional `task`, `output_schema_version`, `prompt_version`.
 
-`desired_state` uses dot-separated paths into the normalized live snapshot, for example `research.state` or `player.position`.
+`create_task` requires a versioned TaskSpec with a non-empty bounded `operations` list and at least one `success_when` condition. Every ToolCall carries or assumes the current `tool_schema_version`.
 
-Allowed condition operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `truthy`, `falsy`, `changed`, `increased`, `delta_gt`.
+Legacy 1.x payloads that omit version fields migrate to current 1.x defaults. A different major version is rejected safely.
 
-`changed` / `increased` / `delta_gt` compare the final state with the task execution baseline.
-
-Unknown `abort_if` paths fail safe and block the task.
-
-`operations[].tool` must be in the fixed Verified Tool Surface allowlist. Raw Lua/direct Bridge actions are rejected.
+The model cannot name arbitrary Bridge/Lua actions. Tool calls remain constrained by the Verified Tool Surface allowlist.
