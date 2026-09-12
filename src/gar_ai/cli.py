@@ -4,14 +4,19 @@ import argparse
 import importlib
 import logging
 import os
+import signal
+import threading
 from pathlib import Path
 from typing import Callable
 
 from .ai_client import OpenAICompatibleAIClient
 from .controller import ControllerConfig, ControllerLoop
 from .incidents import IncidentManager
+from .keeper import KeeperPolicy
 from .orchestrator import Orchestrator
 from .storage import JsonStateStore
+
+logger = logging.getLogger(__name__)
 
 REQUIRED_BRIDGE_METHODS = (
     "snapshot",
@@ -47,6 +52,40 @@ def load_bridge_factory(spec: str):
     return bridge
 
 
+def install_signal_handlers(
+    controller: ControllerLoop,
+    stop_event: threading.Event,
+) -> tuple[str, ...]:
+    """Install separate resume and shutdown signal paths.
+
+    SIGINT/SIGTERM request a graceful shutdown. SIGUSR1 (POSIX) or SIGBREAK
+    (Windows, when available) leaves SAFE_HOLD and forces ``user_resume`` on the
+    next controller step.
+    """
+
+    def request_stop(signum, _frame) -> None:
+        logger.info("shutdown signal received: %s", signum)
+        stop_event.set()
+
+    def request_resume(signum, _frame) -> None:
+        logger.info("resume signal received: %s", signum)
+        controller.resume()
+
+    installed_resume: list[str] = []
+    for name in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            signal.signal(sig, request_stop)
+
+    for name in ("SIGUSR1", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            signal.signal(sig, request_resume)
+            installed_resume.append(name)
+
+    return tuple(installed_resume)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gar-ai",
@@ -75,6 +114,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--heartbeat-sec", type=float, default=1.0)
     parser.add_argument("--strategic-review-sec", type=float, default=180.0)
+    parser.add_argument(
+        "--action-log-limit",
+        type=int,
+        default=500,
+        help="Maximum recent Keeper actions retained in memory",
+    )
+    parser.add_argument(
+        "--duration-sec",
+        type=float,
+        default=None,
+        help="Optional graceful auto-stop duration for supervised runs/tests",
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser
 
@@ -90,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--endpoint or GAR_AI_ENDPOINT is required")
     if not args.model:
         raise SystemExit("--model or GAR_AI_MODEL is required")
+    if args.action_log_limit <= 0:
+        raise SystemExit("--action-log-limit must be > 0")
+    if args.duration_sec is not None and args.duration_sec <= 0:
+        raise SystemExit("--duration-sec must be > 0")
 
     api_key = os.getenv(args.api_key_env)
     if not api_key:
@@ -111,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         ai=ai,
         store=store,
         incidents=incidents,
+        keeper_policy=KeeperPolicy(action_log_limit=args.action_log_limit),
         goal=args.goal,
     )
     controller = ControllerLoop(
@@ -121,11 +177,30 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
-    try:
-        controller.run_forever()
-    except KeyboardInterrupt:
-        logging.getLogger(__name__).info(
-            "controller shutdown requested by user"
+    stop_event = threading.Event()
+    resume_signals = install_signal_handlers(controller, stop_event)
+    if resume_signals:
+        logger.info(
+            "SAFE_HOLD resume signal(s): %s",
+            ", ".join(resume_signals),
         )
-        return 0
+    else:
+        logger.warning(
+            "no OS resume signal is available; use ControllerLoop.resume() "
+            "from the embedding process"
+        )
+
+    timer: threading.Timer | None = None
+    if args.duration_sec is not None:
+        timer = threading.Timer(args.duration_sec, stop_event.set)
+        timer.daemon = True
+        timer.start()
+
+    try:
+        controller.run_forever(stop_event)
+    finally:
+        if timer is not None:
+            timer.cancel()
+        controller.shutdown()
+
     return 0
