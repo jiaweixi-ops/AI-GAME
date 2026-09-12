@@ -30,12 +30,10 @@ class ControllerLoop:
         config: ControllerConfig | None = None,
         *,
         now=time.monotonic,
-        sleep=time.sleep,
     ) -> None:
         self.orchestrator = orchestrator
         self.config = config or ControllerConfig()
         self._now = now
-        self._sleep = sleep
         self._last_review = now()
         self._started = False
         self._safe_hold = False
@@ -65,7 +63,7 @@ class ControllerLoop:
     def _finalize_result(self, result: OrchestratorResult) -> OrchestratorResult:
         """Apply runtime safety transitions to every externally visible step."""
         if result.status == "safe_stop":
-            self.enter_safe_hold(result.trigger)
+            self.enter_safe_hold(result.reason or result.trigger)
         return result
 
     def step(self) -> OrchestratorResult:

@@ -1,3 +1,4 @@
+import inspect
 import signal
 import tempfile
 import threading
@@ -34,7 +35,11 @@ class _TwoStageOrchestrator:
     def tick(self, *, trigger="event"):
         self.calls.append(trigger)
         if trigger == "startup":
-            return OrchestratorResult("safe_stop", "ai_error")
+            return OrchestratorResult(
+                "safe_stop",
+                trigger,
+                reason="ai_error",
+            )
         return OrchestratorResult("continue", trigger)
 
 
@@ -52,6 +57,20 @@ class _CountingGlobalStore:
 
 
 class V0RC2RuntimeTests(unittest.TestCase):
+    def test_controller_constructor_has_no_dead_sleep_parameter(self):
+        parameters = inspect.signature(ControllerLoop.__init__).parameters
+        self.assertNotIn("sleep", parameters)
+
+    def test_safe_hold_reason_is_independent_from_trigger(self):
+        orchestrator = _TwoStageOrchestrator()
+        loop = ControllerLoop(orchestrator)
+
+        result = loop.step()
+
+        self.assertEqual(result.trigger, "startup")
+        self.assertEqual(result.reason, "ai_error")
+        self.assertEqual(loop.safe_hold_reason, "ai_error")
+
     def test_step_itself_enters_safe_hold(self):
         orchestrator = _TwoStageOrchestrator()
         loop = ControllerLoop(orchestrator)
