@@ -8,7 +8,7 @@ from .ai_client import AIClient
 from .budget import BudgetExceeded
 from .digest import StateDigestBuilder
 from .incidents import IncidentManager
-from .keeper import Keeper, KeeperResult
+from .keeper import Keeper, KeeperPolicy, KeeperResult
 from .storage import JsonStateStore
 from .types import Decision, MasterPlan, TaskSpec
 from .verified_tools import VerifiedToolSurface
@@ -35,6 +35,7 @@ class Orchestrator:
         store: JsonStateStore,
         incidents: IncidentManager,
         watchdog: Watchdog | None = None,
+        keeper_policy: KeeperPolicy | None = None,
         goal: str = "advance the current game safely",
     ) -> None:
         self.bridge = bridge
@@ -44,7 +45,18 @@ class Orchestrator:
         self.watchdog = watchdog or Watchdog()
         self.goal = goal
         self.digest_builder = StateDigestBuilder()
-        self.keeper = Keeper(bridge, store, self.watchdog)
+        self.keeper = Keeper(
+            bridge,
+            store,
+            self.watchdog,
+            policy=keeper_policy,
+        )
+
+    def flush_runtime(self) -> None:
+        """Flush store-owned buffered state when the controller shuts down."""
+        flush = getattr(self.store, "flush", None)
+        if callable(flush):
+            flush()
 
     def _agent_state(self, task: TaskSpec | None) -> dict[str, Any]:
         if task is None:
@@ -264,7 +276,8 @@ class Orchestrator:
             self.store.load_plan(),
             decision.plan_patch,
             allow_current_change=(
-                task is None or trigger in {"replan", "user_goal_change"}
+                task is None
+                or trigger in {"replan", "user_goal_change", "user_resume"}
             ),
         )
 
